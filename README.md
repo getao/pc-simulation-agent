@@ -37,13 +37,16 @@ uv run python cold_start.py --persona "..." --model claude-sonnet-4-6 --timestam
 
 ```bash
 # Run 10 personas starting from line 0, with 5 concurrent workers
-uv run python batch_run.py --input personas_subset_1k.jsonl --limit 10 --concurrency 5
+uv run python batch_run.py --input personas.jsonl --limit 10 --concurrency 5
+
+# Custom world ID prefix (produces gdpeval_world_000000, gdpeval_world_000001, ...)
+uv run python batch_run.py --input personas.jsonl --limit 3 --concurrency 3 --prefix gdpeval_world
 
 # Resume from line 50
-uv run python batch_run.py --input personas_subset_1k.jsonl --offset 50 --limit 20 --concurrency 10
+uv run python batch_run.py --input personas.jsonl --offset 50 --limit 20 --concurrency 10
 
-# Dry-run: plan all files but only generate content for the first 3
-uv run python batch_run.py --input personas_subset_1k.jsonl --limit 5 --max-generate 3
+# Per-world timeout (default: 3600s)
+uv run python batch_run.py --input personas.jsonl --limit 5 --timeout 1800
 ```
 
 The input JSONL file should have one JSON object per line with a `"persona"` field:
@@ -78,6 +81,7 @@ worlds/world_000001/
   file_list.json            # All planned files with metadata
   file_graph.json           # File relationships (DAG)
   activity_log.jsonl        # Chronological activity entries
+  usage.json                # Token usage and cost summary
   output.log                # Claude Code output log
   _complete                 # Completion marker
   drives/
@@ -121,7 +125,9 @@ Just re-run the same command — it picks up where it left off.
 | `--input` | Path to personas JSONL file | required |
 | `--limit` | Max personas to process | all |
 | `--offset` | Skip first N personas | 0 |
+| `--prefix` | World ID prefix | `world` |
 | `--concurrency` | Parallel workers | 5 |
+| `--timeout` | Per-world timeout in seconds | 3600 |
 | `--model` | Claude model | `claude-sonnet-4-6` |
 | `--max-generate` | Max files to generate per world | all |
 | `--worlds-root` | Output directory | `worlds/` |

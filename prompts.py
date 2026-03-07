@@ -469,13 +469,15 @@ You are generating realistic file contents for a simulated Windows PC environmen
 {batch_json}
 ```
 
-## Path Mapping
+## Path Mapping — CRITICAL
 
-Logical Windows paths map to physical paths under this directory:
+Logical Windows paths in file_list MUST be converted to physical paths under `drives/`:
 - `C:/...` → `drives/C/...`
 - `D:/...` → `drives/D/...`
 
 For example: `C:/Users/alice/Documents/report.docx` → `drives/C/Users/alice/Documents/report.docx`
+
+**DANGER: NEVER create files at actual Windows drive paths like `C:/Users/...` or `D:/Data/...`. This would write to the real filesystem and corrupt the user's machine. ALWAYS use the `drives/` prefix. This applies to ALL file operations: direct writes, scripts (Python/Node), curl downloads, mkdir, etc. Every path in every script you write must start with `drives/`.**
 
 ## Instructions
 
@@ -572,6 +574,7 @@ The activity description must NOT be a simple atomic action like "saved a file".
 4. How it connects to the user's projects and workflow
 
 ## Important
+- **NEVER write to real Windows paths (C:/, D:/, etc.) — ALWAYS use drives/C/, drives/D/ relative paths in ALL file operations including generated scripts**
 - Create all necessary parent directories before writing files
 - Use the physical path mapping (drives/C/..., drives/D/...)
 - Process files in the order given (chronological)

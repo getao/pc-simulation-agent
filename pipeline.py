@@ -12,12 +12,16 @@ from datetime import datetime, timedelta
 
 import anyio
 
+import re
+
 from claude_agent_sdk import (
     query,
     ClaudeAgentOptions,
     AssistantMessage,
     TextBlock,
     ResultMessage,
+    PermissionResultAllow,
+    PermissionResultDeny,
 )
 
 from prompts import (
@@ -41,6 +45,42 @@ SYSTEM_PROMPT = {
     ),
 }
 
+# Regex: bare Windows drive letter path (C:/ D:/ etc.) NOT preceded by "drives/"
+_BARE_DRIVE_RE = re.compile(r'(?<!/)\b[A-Z]:[/\\]')
+
+
+def _make_path_guard(allowed_dir: str):
+    """Return a can_use_tool callback that blocks writes outside allowed_dir."""
+    allowed_prefix = os.path.normcase(os.path.abspath(allowed_dir)) + os.sep
+
+    async def _guard(tool_name, tool_input, _context):
+        # Guard Write / Edit — check file_path
+        if tool_name in ("Write", "Edit", "NotebookEdit"):
+            file_path = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
+            abs_path = os.path.normcase(os.path.abspath(file_path))
+            if not abs_path.startswith(allowed_prefix):
+                return PermissionResultDeny(
+                    message=f"BLOCKED: path {file_path} is outside allowed directory {allowed_dir}"
+                )
+
+        # Guard Bash — reject commands containing bare drive-letter paths
+        if tool_name == "Bash":
+            command = tool_input.get("command", "")
+            if _BARE_DRIVE_RE.search(command):
+                return PermissionResultDeny(
+                    message=f"BLOCKED: command contains a bare Windows drive path. "
+                            f"Use drives/C/ or drives/D/ instead."
+                )
+
+        return PermissionResultAllow()
+
+    return _guard
+
+
+async def _as_stream(text: str):
+    """Wrap a string prompt as an async iterable (required for can_use_tool)."""
+    yield {"type": "user", "message": {"role": "user", "content": text}}
+
 
 async def call_claude(
     prompt: str,
@@ -49,17 +89,19 @@ async def call_claude(
     plugins: list | None = None,
     model: str | None = None,
     log_file: str | None = None,
-) -> str:
-    """Call Claude Code CLI via the SDK and return collected text output.
+) -> dict:
+    """Call Claude Code CLI via the SDK and return result info.
+
+    Returns a dict with keys: text, cost_usd, usage, duration_ms, num_turns.
 
     Args:
         log_file: If set, stream Claude Code output to this file instead of stdout.
     """
     options = ClaudeAgentOptions(
         system_prompt=SYSTEM_PROMPT,
-        permission_mode="bypassPermissions",
         cwd=cwd,
         max_turns=max_turns,
+        can_use_tool=_make_path_guard(cwd),
     )
     if plugins:
         options.plugins = plugins
@@ -67,10 +109,11 @@ async def call_claude(
         options.model = model
 
     output_parts: list[str] = []
+    result_info: dict = {}
     fh = open(log_file, "a", encoding="utf-8") if log_file else None
 
     try:
-        async for message in query(prompt=prompt, options=options):
+        async for message in query(prompt=_as_stream(prompt), options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock):
@@ -81,7 +124,12 @@ async def call_claude(
                             print(block.text, end="", flush=True)
                         output_parts.append(block.text)
             elif isinstance(message, ResultMessage):
-                pass  # session ended
+                result_info = {
+                    "cost_usd": message.total_cost_usd or 0.0,
+                    "usage": message.usage or {},
+                    "duration_ms": message.duration_ms,
+                    "num_turns": message.num_turns,
+                }
     finally:
         if fh:
             fh.write("\n")
@@ -89,7 +137,8 @@ async def call_claude(
 
     if not fh:
         print()  # newline after streamed output
-    return "".join(output_parts)
+    result_info["text"] = "".join(output_parts)
+    return result_info
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +323,7 @@ async def cold_start(
     if world_id is None:
         world_id = uuid.uuid4().hex[:12]
 
-    world_dir = os.path.join(worlds_root, world_id)
+    world_dir = os.path.abspath(os.path.join(worlds_root, world_id))
     os.makedirs(world_dir, exist_ok=True)
 
     # Save persona
@@ -292,6 +341,20 @@ async def cold_start(
 
     t0 = time.monotonic()
     log(f"Cold Start started. dir={world_dir} ts={current_timestamp}")
+
+    # Usage tracking
+    total_cost_usd = 0.0
+    total_turns = 0
+    total_usage: dict = {}
+
+    def _accumulate(result: dict):
+        nonlocal total_cost_usd, total_turns, total_usage
+        total_cost_usd += result.get("cost_usd", 0.0)
+        total_turns += result.get("num_turns", 0)
+        usage = result.get("usage", {})
+        for k, v in usage.items():
+            if isinstance(v, (int, float)):
+                total_usage[k] = total_usage.get(k, 0) + v
 
     # ------------------------------------------------------------------
     # Check for resumable state
@@ -320,7 +383,7 @@ async def cold_start(
         # --------------------------------------------------------------
         log("Step 1: Generating User Profile...")
         prompt = build_user_profile_prompt(persona)
-        await call_claude(prompt, cwd=world_dir, max_turns=5, plugins=plugins, model=model, log_file=log_file)
+        _accumulate(await call_claude(prompt, cwd=world_dir, max_turns=5, plugins=plugins, model=model, log_file=log_file))
         profile = _validate_user_profile(world_dir)
         log("Step 1 done: user_profile.json created.")
 
@@ -341,7 +404,7 @@ async def cold_start(
         system_start_ts = system_start.strftime("%Y-%m-%dT%H:%M:%S")
 
         prompt = build_filesystem_policy_prompt(profile_json, current_timestamp, system_start_ts)
-        await call_claude(prompt, cwd=world_dir, max_turns=5, plugins=plugins, model=model, log_file=log_file)
+        _accumulate(await call_claude(prompt, cwd=world_dir, max_turns=5, plugins=plugins, model=model, log_file=log_file))
         policy = _validate_filesystem_policy(world_dir, current_timestamp)
         log(f"Step 2 done: filesystem_policy.json created. system_start={system_start_ts}")
 
@@ -352,7 +415,7 @@ async def cold_start(
         policy_json = json.dumps(policy, indent=2, ensure_ascii=False)
         profile_json = json.dumps(profile, indent=2, ensure_ascii=False)
         prompt = build_planning_prompt(profile_json, policy_json, current_timestamp)
-        await call_claude(prompt, cwd=world_dir, max_turns=15, plugins=plugins, model=model, log_file=log_file)
+        _accumulate(await call_claude(prompt, cwd=world_dir, max_turns=15, plugins=plugins, model=model, log_file=log_file))
         system_start_ts = policy["system_start_timestamp"]
         project_index, file_list, file_graph = _validate_planning(
             world_dir, current_timestamp, system_start_ts
@@ -403,7 +466,7 @@ async def cold_start(
             user_profile_summary=user_summary,
             world_root=world_dir,
         )
-        await call_claude(prompt, cwd=world_dir, max_turns=500, plugins=plugins, model=model, log_file=log_file)
+        _accumulate(await call_claude(prompt, cwd=world_dir, max_turns=500, plugins=plugins, model=model, log_file=log_file))
         _mark_generated(world_dir, batch)
         log(f"Step 5: Batch {i}/{len(batches)} done.")
 
@@ -420,9 +483,19 @@ async def cold_start(
             activity_count = sum(1 for line in f if line.strip())
 
     # Write completion marker
+    elapsed_s = time.monotonic() - t0
+    usage_summary = {
+        "total_cost_usd": round(total_cost_usd, 4),
+        "total_turns": total_turns,
+        "total_duration_s": round(elapsed_s, 1),
+        "usage": total_usage,
+    }
     with open(os.path.join(world_dir, "_complete"), "w") as f:
         f.write(datetime.now().isoformat() + "\n")
+    with open(os.path.join(world_dir, "usage.json"), "w", encoding="utf-8") as f:
+        json.dump(usage_summary, f, indent=2, ensure_ascii=False)
 
-    log(f"COMPLETE: {generated}/{len(final_file_list)} files generated, {activity_count} activity log entries.")
+    usage_str = ", ".join(f"{k}={v}" for k, v in total_usage.items())
+    log(f"COMPLETE: {generated}/{len(final_file_list)} files, {activity_count} activities. Cost: ${total_cost_usd:.4f}, turns: {total_turns}, {usage_str}")
 
     return world_dir
