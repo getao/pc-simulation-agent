@@ -58,6 +58,12 @@ def main():
         default=None,
         help="Only generate content for the first N files (dry-run mode). Planning still produces the full file list.",
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Claude model to use (e.g. claude-sonnet-4-6). Default: SDK default.",
+    )
 
     args = parser.parse_args()
 
@@ -91,6 +97,7 @@ def main():
             plugins=plugins,
             worlds_root=args.worlds_root,
             max_generate=args.max_generate,
+            model=args.model,
         )
         print(f"\nWorld created at: {world_dir}")
 

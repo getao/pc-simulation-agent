@@ -5,8 +5,12 @@ Sequences Claude Code SDK calls to build a complete UserWorld from a persona.
 
 import json
 import os
+import random
+import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+
+import anyio
 
 from claude_agent_sdk import (
     query,
@@ -43,8 +47,14 @@ async def call_claude(
     cwd: str,
     max_turns: int = 10,
     plugins: list | None = None,
+    model: str | None = None,
+    log_file: str | None = None,
 ) -> str:
-    """Call Claude Code CLI via the SDK and return collected text output."""
+    """Call Claude Code CLI via the SDK and return collected text output.
+
+    Args:
+        log_file: If set, stream Claude Code output to this file instead of stdout.
+    """
     options = ClaudeAgentOptions(
         system_prompt=SYSTEM_PROMPT,
         permission_mode="bypassPermissions",
@@ -53,19 +63,32 @@ async def call_claude(
     )
     if plugins:
         options.plugins = plugins
+    if model:
+        options.model = model
 
     output_parts: list[str] = []
+    fh = open(log_file, "a", encoding="utf-8") if log_file else None
 
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    print(block.text, end="", flush=True)
-                    output_parts.append(block.text)
-        elif isinstance(message, ResultMessage):
-            pass  # session ended
+    try:
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        if fh:
+                            fh.write(block.text)
+                            fh.flush()
+                        else:
+                            print(block.text, end="", flush=True)
+                        output_parts.append(block.text)
+            elif isinstance(message, ResultMessage):
+                pass  # session ended
+    finally:
+        if fh:
+            fh.write("\n")
+            fh.close()
 
-    print()  # newline after streamed output
+    if not fh:
+        print()  # newline after streamed output
     return "".join(output_parts)
 
 
@@ -117,12 +140,15 @@ def _validate_planning(world_dir: str, current_ts: str, system_start_ts: str) ->
         raise RuntimeError("file_list.json was not created")
     file_list = _read_json(fl_path)
 
-    if len(file_list) > 100:
-        raise RuntimeError(f"file_list has {len(file_list)} files, exceeds 100 limit")
+    # Validate only originally planned entries (not extracted files added at runtime)
+    planned = [f for f in file_list if not f.get("derived_from")]
+    if len(planned) > 100:
+        raise RuntimeError(f"file_list has {len(planned)} planned files, exceeds 100 limit")
 
-    # Validate timestamps
-    for entry in file_list:
+    for entry in planned:
         ts = entry.get("timestamp", "")
+        if not ts:
+            continue
         if ts < system_start_ts:
             raise RuntimeError(
                 f"File {entry['path']} timestamp {ts} is before system_start {system_start_ts}"
@@ -233,12 +259,14 @@ async def cold_start(
     plugins: list | None = None,
     worlds_root: str = "worlds",
     max_generate: int | None = None,
+    model: str | None = None,
 ) -> str:
     """Run the full Cold Start pipeline. Returns the world directory path.
 
     Args:
         max_generate: If set, only generate content for the first N files
                       (planning steps still produce the full file list).
+        model: Claude model to use (e.g. "claude-sonnet-4-6"). Default: SDK default.
     """
 
     if current_timestamp is None:
@@ -254,82 +282,115 @@ async def cold_start(
     with open(persona_path, "w", encoding="utf-8") as f:
         json.dump({"persona": persona, "current_timestamp": current_timestamp}, f, indent=2, ensure_ascii=False)
 
-    print(f"=== Cold Start: {world_id} ===")
-    print(f"World dir: {world_dir}")
-    print(f"Timestamp: {current_timestamp}")
-    print()
+    log_file = os.path.join(world_dir, "output.log")
+    tag = f"[{world_id}]"
+
+    def log(msg: str):
+        elapsed = time.monotonic() - t0
+        m, s = divmod(int(elapsed), 60)
+        print(f"{tag} [{m:02d}:{s:02d}] {msg}", flush=True)
+
+    t0 = time.monotonic()
+    log(f"Cold Start started. dir={world_dir} ts={current_timestamp}")
 
     # ------------------------------------------------------------------
-    # Step 1: Persona → User Profile
+    # Check for resumable state
     # ------------------------------------------------------------------
-    print("=" * 60)
-    print("STEP 1: Generating User Profile...")
-    print("=" * 60)
-    prompt = build_user_profile_prompt(persona)
-    await call_claude(prompt, cwd=world_dir, max_turns=5, plugins=plugins)
-    profile = _validate_user_profile(world_dir)
-    print("\n[OK] user_profile.json created and validated.\n")
+    resuming = False
+    planning_files = ["user_profile.json", "filesystem_policy.json",
+                      "project_index.json", "file_list.json", "file_graph.json"]
+    if all(os.path.exists(os.path.join(world_dir, f)) for f in planning_files):
+        try:
+            profile = _validate_user_profile(world_dir)
+            policy = _validate_filesystem_policy(world_dir, current_timestamp)
+            system_start_ts = policy["system_start_timestamp"]
+            project_index, file_list, file_graph = _validate_planning(
+                world_dir, current_timestamp, system_start_ts
+            )
+            resuming = True
+            already_done = sum(1 for f in file_list if f.get("content_generated"))
+            log(f"RESUME: {already_done}/{len(file_list)} files already generated.")
+        except Exception as e:
+            log(f"RESUME: Existing data invalid ({e}), re-running from scratch.")
+            resuming = False
 
-    # ------------------------------------------------------------------
-    # Step 2: User Profile → Filesystem Policy
-    # ------------------------------------------------------------------
-    print("=" * 60)
-    print("STEP 2: Generating Filesystem Policy...")
-    print("=" * 60)
-    profile_json = json.dumps(profile, indent=2, ensure_ascii=False)
-    prompt = build_filesystem_policy_prompt(profile_json, current_timestamp)
-    await call_claude(prompt, cwd=world_dir, max_turns=5, plugins=plugins)
-    policy = _validate_filesystem_policy(world_dir, current_timestamp)
-    system_start_ts = policy["system_start_timestamp"]
-    print(f"\n[OK] filesystem_policy.json created. System start: {system_start_ts}\n")
+    if not resuming:
+        # --------------------------------------------------------------
+        # Step 1: Persona → User Profile
+        # --------------------------------------------------------------
+        log("Step 1: Generating User Profile...")
+        prompt = build_user_profile_prompt(persona)
+        await call_claude(prompt, cwd=world_dir, max_turns=5, plugins=plugins, model=model, log_file=log_file)
+        profile = _validate_user_profile(world_dir)
+        log("Step 1 done: user_profile.json created.")
 
-    # ------------------------------------------------------------------
-    # Step 3: Joint Planning
-    # ------------------------------------------------------------------
-    print("=" * 60)
-    print("STEP 3: Planning Projects, Files, and File Graph...")
-    print("=" * 60)
-    policy_json = json.dumps(policy, indent=2, ensure_ascii=False)
-    prompt = build_planning_prompt(profile_json, policy_json, current_timestamp)
-    await call_claude(prompt, cwd=world_dir, max_turns=15, plugins=plugins)
-    project_index, file_list, file_graph = _validate_planning(
-        world_dir, current_timestamp, system_start_ts
-    )
-    print(f"\n[OK] Planning complete. {len(file_list)} files planned.\n")
+        # --------------------------------------------------------------
+        # Step 2: User Profile → Filesystem Policy
+        # --------------------------------------------------------------
+        log("Step 2: Generating Filesystem Policy...")
+        profile_json = json.dumps(profile, indent=2, ensure_ascii=False)
+
+        # Generate random system_start_timestamp in 2020-2025
+        start_range = datetime(2020, 1, 1)
+        end_range = datetime(2025, 12, 31)
+        random_days = random.randint(0, (end_range - start_range).days)
+        random_hour = random.randint(7, 20)
+        random_minute = random.randint(0, 59)
+        system_start = start_range + timedelta(days=random_days)
+        system_start = system_start.replace(hour=random_hour, minute=random_minute, second=0)
+        system_start_ts = system_start.strftime("%Y-%m-%dT%H:%M:%S")
+
+        prompt = build_filesystem_policy_prompt(profile_json, current_timestamp, system_start_ts)
+        await call_claude(prompt, cwd=world_dir, max_turns=5, plugins=plugins, model=model, log_file=log_file)
+        policy = _validate_filesystem_policy(world_dir, current_timestamp)
+        log(f"Step 2 done: filesystem_policy.json created. system_start={system_start_ts}")
+
+        # --------------------------------------------------------------
+        # Step 3: Joint Planning
+        # --------------------------------------------------------------
+        log("Step 3: Planning Projects, Files, and File Graph...")
+        policy_json = json.dumps(policy, indent=2, ensure_ascii=False)
+        profile_json = json.dumps(profile, indent=2, ensure_ascii=False)
+        prompt = build_planning_prompt(profile_json, policy_json, current_timestamp)
+        await call_claude(prompt, cwd=world_dir, max_turns=15, plugins=plugins, model=model, log_file=log_file)
+        system_start_ts = policy["system_start_timestamp"]
+        project_index, file_list, file_graph = _validate_planning(
+            world_dir, current_timestamp, system_start_ts
+        )
+        log(f"Step 3 done: {len(file_list)} files planned.")
 
     # ------------------------------------------------------------------
     # Step 4: Create Directory Structure
     # ------------------------------------------------------------------
-    print("=" * 60)
-    print("STEP 4: Creating directory structure...")
-    print("=" * 60)
     _create_directories(world_dir, file_list)
-    print("[OK] Directories created.\n")
+    log("Step 4 done: directories created.")
 
     # ------------------------------------------------------------------
     # Step 5: Generate File Contents (batched)
     # ------------------------------------------------------------------
-    print("=" * 60)
-    print("STEP 5: Generating file contents...")
-    print("=" * 60)
-
+    profile_json = json.dumps(profile, indent=2, ensure_ascii=False)
     user_summary = _build_user_summary(profile)
 
-    # Apply max_generate limit
+    # Filter out already-generated files
     sorted_files = sorted(file_list, key=lambda f: f["timestamp"])
+    remaining_files = [f for f in sorted_files if not f.get("content_generated")]
+
+    if remaining_files and len(remaining_files) < len(sorted_files):
+        log(f"Step 5: Skipping {len(sorted_files) - len(remaining_files)} already-generated, {len(remaining_files)} remaining.")
+
+    # Apply max_generate limit
     if max_generate is not None:
-        files_to_generate = sorted_files[:max_generate]
-        skipped = len(sorted_files) - len(files_to_generate)
-        print(f"[dry-run] Generating only {len(files_to_generate)}/{len(sorted_files)} files (skipping {skipped})")
+        files_to_generate = remaining_files[:max_generate]
+        skipped_count = len(remaining_files) - len(files_to_generate)
+        log(f"Step 5 [dry-run]: generating {len(files_to_generate)}/{len(remaining_files)} files (skipping {skipped_count})")
     else:
-        files_to_generate = sorted_files
+        files_to_generate = remaining_files
 
     batches = _batch_files(files_to_generate)
 
     for i, batch in enumerate(batches, 1):
-        print(f"\n--- Batch {i}/{len(batches)} ({len(batch)} files) ---")
-        for entry in batch:
-            print(f"  {entry['content_mode']:>8}  {entry['path']}")
+        paths = ", ".join(os.path.basename(e["path"]) for e in batch)
+        log(f"Step 5: Batch {i}/{len(batches)} ({len(batch)} files: {paths})")
 
         activity_log = _get_recent_activity_log(world_dir)
         batch_paths = {entry["path"] for entry in batch}
@@ -342,29 +403,26 @@ async def cold_start(
             user_profile_summary=user_summary,
             world_root=world_dir,
         )
-        await call_claude(prompt, cwd=world_dir, max_turns=500, plugins=plugins)
+        await call_claude(prompt, cwd=world_dir, max_turns=500, plugins=plugins, model=model, log_file=log_file)
         _mark_generated(world_dir, batch)
-        print(f"\n[OK] Batch {i} complete.")
+        log(f"Step 5: Batch {i}/{len(batches)} done.")
 
     # ------------------------------------------------------------------
     # Done
     # ------------------------------------------------------------------
-    print()
-    print("=" * 60)
-    print(f"Cold Start complete: {world_dir}")
-    print("=" * 60)
-
-    # Summary
     final_file_list = _read_json(os.path.join(world_dir, "file_list.json"))
     generated = sum(1 for f in final_file_list if f.get("content_generated"))
-    print(f"Files planned: {len(final_file_list)}")
-    print(f"Files generated: {generated}")
 
     activity_count = 0
     al_path = os.path.join(world_dir, "activity_log.jsonl")
     if os.path.exists(al_path):
         with open(al_path, "r", encoding="utf-8") as f:
             activity_count = sum(1 for line in f if line.strip())
-    print(f"Activity log entries: {activity_count}")
+
+    # Write completion marker
+    with open(os.path.join(world_dir, "_complete"), "w") as f:
+        f.write(datetime.now().isoformat() + "\n")
+
+    log(f"COMPLETE: {generated}/{len(final_file_list)} files generated, {activity_count} activity log entries.")
 
     return world_dir

@@ -136,7 +136,7 @@ Write a single JSON file `user_profile.json` with EXACTLY this structure (fill i
 # Step 2: User Profile → Filesystem Policy
 # ---------------------------------------------------------------------------
 
-def build_filesystem_policy_prompt(profile_json: str, current_timestamp: str) -> str:
+def build_filesystem_policy_prompt(profile_json: str, current_timestamp: str, system_start_timestamp: str) -> str:
     return f"""\
 You are building a realistic Windows PC filesystem simulation.
 
@@ -154,13 +154,17 @@ Given the user profile below, derive the user's **filesystem behavior pattern** 
 
 {current_timestamp}
 
+## System Start Timestamp (pre-determined, DO NOT change)
+
+{system_start_timestamp}
+
 ## Output Requirements
 
 Write a single JSON file `filesystem_policy.json` with EXACTLY this structure:
 
 ```json
 {{
-  "system_start_timestamp": "<ISO datetime when this PC was first used — must be BEFORE current_timestamp, typically 6-24 months before>",
+  "system_start_timestamp": "{system_start_timestamp}",
   "drive_layout": [
     {{"letter": "C", "role": "system"}},
     {{"letter": "D", "role": "data"}}
@@ -205,7 +209,7 @@ Write a single JSON file `filesystem_policy.json` with EXACTLY this structure:
 
 ## Important Guidelines
 
-- `system_start_timestamp` is the global lower bound for ALL file timestamps in this world. Choose a realistic date based on the user's career history — typically 6-24 months before current_timestamp.
+- `system_start_timestamp` is pre-determined and provided above. Use it EXACTLY as given — do NOT change it.
 - The `username` in paths must match the `identity.username` from the user profile.
 - `drive_layout`: most ordinary users have only C:. Technical users may have D: or more. Decide based on tech_level.
 - `storage_patterns`, `organization_style`, `naming_style`, and `usage_patterns` should all be consistent with the user profile's `filesystem_relevant_traits`, `work_style`, and `document_behavior`.
@@ -288,6 +292,8 @@ An array of file entries:
     "description": "<what this file is and what it contains>",
     "content_mode": "<generate | download | skip>",
     "download_hint": "<URL or search query for download files, omit for non-download files>",
+    "extract": false,
+    "content_scale": "<small | medium | large — only for content_mode 'generate'>",
     "project_ids": ["<project_id or empty array>"],
     "derived_from": ["<path of source file, or empty array>"],
     "content_generated": false
@@ -336,9 +342,9 @@ An array of file entries:
 - The mix must feel realistic for THIS specific user
 
 ### Content Modes
-- `generate`: for files whose content should be created by AI (documents, code, notes, etc.)
+- `generate`: for files whose content should be created by AI (documents, code, notes, images, etc.). This includes `.docx`, `.xlsx`, `.pptx`, `.pdf`, `.png`, `.jpg` — all of these CAN be generated.
 - `download`: for files obtained from the internet (PDFs, forms, templates, installers, archives)
-- `skip`: for binary files, installers, large archives — only a placeholder will be created
+- `skip`: for installers (.exe, .msi), large archives that won't be extracted, and other files that cannot be meaningfully generated — only a placeholder will be created. Do NOT use `skip` for images, Office documents, or PDFs.
 
 ### CRITICAL: Download Files Must Be Real and Downloadable
 When planning files with `content_mode: "download"`, you MUST prefer documents that **actually exist on the public internet as free, direct-download PDFs or files**. Do NOT invent fictional document names for downloads.
@@ -384,9 +390,27 @@ If the user's work context requires reference to paywalled/gated content (e.g., 
 - Use the username from the user profile
 
 ### Archive Patterns
-- Some downloaded archives (.zip) may have extracted contents as separate files
-- The extraction relationship should be in file_graph with type "extracted_from"
-- Some archives may remain un-extracted
+- Downloaded archives (.zip, .tar.gz, .rar, etc.) should be listed as a SINGLE entry with `content_mode: "download"`
+- Decide whether the user would extract the archive: set `"extract": true` if yes, `"extract": false` if not
+- Do NOT list the extracted contents as separate entries in file_list — the actual extracted files are unknown until extraction happens at generation time
+- Do NOT add extracted file paths to file_graph nodes/edges at planning time — those will be added after real extraction
+- CRITICAL: Archive download_hints must point to **real, publicly available archives** (e.g., GitHub release .zip files, open dataset archives, government data packages). Archives cannot be fallback-generated, so they MUST be downloadable.
+
+### Content Scale — Realistic File Sizes
+Every file with `content_mode: "generate"` must have a `content_scale` field. Files with `content_mode: "download"` do NOT need `content_scale` (downloaded files are whatever size they are).
+
+- `small`: a quick note, short memo, simple spreadsheet (~10-30 rows), 1-page doc, brief script
+- `medium`: a typical working document (3-8 pages), a data sheet (50-200 rows), a multi-section report, a moderate codebase file
+- `large`: a major deliverable (15+ pages), a substantial dataset (500-2000+ rows), a comprehensive report, a long analysis notebook
+
+**Distribution should adapt to THIS user — do NOT use fixed percentages.**
+- A data analyst may have many `large` Excel datasets but `small` notes
+- A manager may have several `large` reports and presentations
+- A developer may have mostly `medium` code files with few `large` ones
+- A student may have mostly `small` files with one or two `large` papers
+- Think about what THIS user's key deliverables are — those should be `large`
+- Everyday notes, quick memos, and scratch files should be `small`
+- The distribution should feel natural for the user's role and work patterns
 
 ### Version Chains
 - Some documents should have version chains (v1 → v2 → final)
@@ -463,6 +487,24 @@ Process EACH file in the batch above, in order. For each file:
 - If the file is derived_from another file, the content should realistically build on or reference the source
 - Version chains: later versions should show evolution from earlier versions
 
+**CRITICAL — Respect the `content_scale` field for realistic file sizes:**
+
+| content_scale | .docx / .pdf | .xlsx | .txt / .md / code | .png / .jpg |
+|---------------|-------------|-------|-------------------|-------------|
+| `small` | 1-2 pages, brief content | 10-30 rows | Short file, ~20-50 lines | Simple image |
+| `medium` | 3-8 pages, multiple sections | 50-200 rows, multiple sheets OK | Moderate, ~50-200 lines | Detailed image |
+| `large` | 15+ pages, comprehensive | 500-2000+ rows, realistic dataset | Long file, 200+ lines | Complex image |
+
+- `large` files are the user's KEY deliverables. Put real effort into them — they should feel like substantial, real documents.
+- For `large` Excel files: write a Python script (using openpyxl) that **programmatically generates** 500-2000+ rows of realistic tabular data. The data must be contextually authentic for what the file represents — think about what real data in this domain looks like and simulate it faithfully:
+  - **Sales/revenue data**: seasonal trends, regional variation, realistic product names and SKUs, price distributions that match the industry, weekend/holiday dips
+  - **Employee/HR data**: realistic name distributions, department sizes proportional to org type, salary bands matching role levels, hire date clustering around fiscal quarters
+  - **Scientific/lab data**: measurement noise appropriate to the instrument, expected value ranges for the phenomenon, outliers at realistic rates, proper units and precision
+  - **Financial data**: transaction amounts following power-law distributions, realistic vendor names, proper account codes, month-end spikes
+  - **Inventory/logistics**: lead times varying by supplier, demand patterns matching product type, safety stock calculations, reorder points
+  - In general: study what real datasets in this domain look like and replicate those patterns. Include proper column headers, formulas, conditional formatting, and multiple sheets where appropriate. Do NOT just fill rows with uniform random numbers.
+- For `large` Word/PDF files: generate multiple sections with realistic headings, paragraphs, tables, and references. Not filler text — actual content relevant to the user's work.
+
 **CRITICAL — Non-text file formats MUST use the specific tool/library listed below. Do NOT write plain text to these files. Do NOT substitute a different library.**
 
 | Extension | Tool / Library | How to create |
@@ -481,7 +523,7 @@ Process EACH file in the batch above, in order. For each file:
 - Use the file's `download_hint` field (URL or search query) to find and download the actual file.
 - If `download_hint` is a direct URL, download it with `curl` or `wget`.
 - If `download_hint` is a search query, search the web, find the direct download link, then download it.
-- If you successfully download the real file, save it to the correct path. Done.
+- If you successfully download the real file, save it to the correct path.
 
 **Step 2 — If download fails or the file is fictional, generate a realistic file using the correct tool:**
 - For **.docx** files: use **docx-js** (write JS script, run with `node`)
@@ -490,8 +532,22 @@ Process EACH file in the batch above, in order. For each file:
 - For **.pdf** files: use **reportlab** (write Python script, run it)
 - For **.png/.jpg** images: use `/image-generation` skill
 - For text-based files (.csv, .json, .txt, etc.): write realistic content directly
-- For archives (.zip): create a small placeholder file
 - For installers (.exe, .msi): create a small placeholder file
+- For **archives** (.zip, .tar.gz, .7z, .rar): archives CANNOT be fallback-generated. If download fails, remove the archive entry from `file_list.json` and remove any related edges/nodes from `file_graph.json`, then move on to the next file.
+
+**Step 3 — If the file is an archive with `"extract": true`, extract it after downloading:**
+- Determine the extraction target directory: use the same parent directory as the archive file itself.
+- Extract with the appropriate command:
+  - `.zip`: `unzip <archive> -d <target_dir>`
+  - `.tar.gz` / `.tgz`: `tar xzf <archive> -C <target_dir>`
+  - `.7z`: `7z x <archive> -o<target_dir>`
+- **If extraction fails** (password-protected, corrupted, unsupported format): do NOT delete the archive. Instead, update `file_list.json` to set `"extract": false` for this entry, and move on.
+- **If extraction succeeds**:
+  - Keep the original archive file in place (do not delete it).
+  - Update the metadata files:
+    1. **file_list.json**: Read the current file_list.json. For each extracted file, append a new entry with the correct logical path (e.g., `C:/Users/username/Downloads/extracted_folder/file.txt`), `origin: "web_download"`, `content_mode: "skip"`, `content_generated: true`, and `derived_from` pointing to the archive path.
+    2. **file_graph.json**: Read the current file_graph.json. Add a node for each extracted file. Add an `"extracted_from"` edge from the archive to each extracted file.
+    3. **activity_log.jsonl**: Log the extraction with the list of extracted files.
 
 ### If content_mode = "skip"
 - Create the file with a single line: "[placeholder]"
