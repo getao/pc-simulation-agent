@@ -99,6 +99,7 @@ async def call_claude(
     """
     options = ClaudeAgentOptions(
         system_prompt=SYSTEM_PROMPT,
+        permission_mode="bypassPermissions",
         cwd=cwd,
         max_turns=max_turns,
         can_use_tool=_make_path_guard(cwd),
