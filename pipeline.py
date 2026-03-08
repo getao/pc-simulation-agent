@@ -348,6 +348,18 @@ async def cold_start(
     total_turns = 0
     total_usage: dict = {}
 
+    def _save_usage():
+        """Save current usage stats to usage.json (called after each step)."""
+        elapsed_s = time.monotonic() - t0
+        usage_summary = {
+            "total_cost_usd": round(total_cost_usd, 4),
+            "total_turns": total_turns,
+            "total_duration_s": round(elapsed_s, 1),
+            "usage": total_usage,
+        }
+        with open(os.path.join(world_dir, "usage.json"), "w", encoding="utf-8") as f:
+            json.dump(usage_summary, f, indent=2, ensure_ascii=False)
+
     def _accumulate(result: dict):
         nonlocal total_cost_usd, total_turns, total_usage
         total_cost_usd += result.get("cost_usd", 0.0)
@@ -356,6 +368,7 @@ async def cold_start(
         for k, v in usage.items():
             if isinstance(v, (int, float)):
                 total_usage[k] = total_usage.get(k, 0) + v
+        _save_usage()
 
     # ------------------------------------------------------------------
     # Check for resumable state
@@ -483,18 +496,10 @@ async def cold_start(
         with open(al_path, "r", encoding="utf-8") as f:
             activity_count = sum(1 for line in f if line.strip())
 
-    # Write completion marker
-    elapsed_s = time.monotonic() - t0
-    usage_summary = {
-        "total_cost_usd": round(total_cost_usd, 4),
-        "total_turns": total_turns,
-        "total_duration_s": round(elapsed_s, 1),
-        "usage": total_usage,
-    }
+    # Write completion marker and final usage
+    _save_usage()
     with open(os.path.join(world_dir, "_complete"), "w") as f:
         f.write(datetime.now().isoformat() + "\n")
-    with open(os.path.join(world_dir, "usage.json"), "w", encoding="utf-8") as f:
-        json.dump(usage_summary, f, indent=2, ensure_ascii=False)
 
     usage_str = ", ".join(f"{k}={v}" for k, v in total_usage.items())
     log(f"COMPLETE: {generated}/{len(final_file_list)} files, {activity_count} activities. Cost: ${total_cost_usd:.4f}, turns: {total_turns}, {usage_str}")

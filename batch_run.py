@@ -163,8 +163,8 @@ def main():
     parser.add_argument("--plugins", type=str, nargs="*", default=None, help="Plugin directories")
     parser.add_argument("--concurrency", type=int, default=5,
                         help="Number of concurrent worlds to generate. Default: 5")
-    parser.add_argument("--timeout", type=int, default=3600,
-                        help="Per-world timeout in seconds. Default: 3600 (60 min)")
+    parser.add_argument("--timeout", type=int, default=18000,
+                        help="Per-world timeout in seconds. Default: 18000 (5 hours)")
 
     args = parser.parse_args()
 
