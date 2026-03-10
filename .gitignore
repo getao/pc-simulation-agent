@@ -2,3 +2,15 @@ __pycache__/
 *.pyc
 .venv/
 worlds/
+
+# Runtime artifacts from file generation
+gen_*.js
+gen_*.py
+drives/
+node_modules/
+package.json
+package-lock.json
+activity_log.jsonl
+test_out.jpg
+sampled_100_gdpval_personas.jsonl
+append_rfid_log.py

@@ -447,6 +447,24 @@ def build_file_generation_prompt(
     return f"""\
 You are generating realistic file contents for a simulated Windows PC environment.
 
+## ⚠️ PATH RULE — READ THIS FIRST ⚠️
+
+Your cwd is the world directory. ALL file paths MUST be **relative to cwd** and start with `drives/`.
+
+| Logical path in file_list | Physical path you MUST use |
+|--------------------------|---------------------------|
+| `C:/Users/alice/Documents/report.docx` | `drives/C/Users/alice/Documents/report.docx` |
+| `D:/Projects/data.xlsx` | `drives/D/Projects/data.xlsx` |
+
+**NEVER use any of these path forms — they will write files to WRONG locations:**
+- `/mnt/d/...` (WSL-style absolute path — WRONG)
+- `/d/...` (Git Bash absolute path — WRONG)
+- `C:/Users/...` or `D:/Data/...` (bare Windows drive letter — WRONG)
+- `/home/...` (Linux home — WRONG)
+- Any absolute path that does NOT start with `drives/`
+
+This applies to EVERYTHING: the Write tool's file_path argument, mkdir commands, curl/wget output paths, AND all paths inside Python/JavaScript scripts you write and execute. Before writing or running anything, double-check that every single path starts with `drives/`.
+
 ## User Context
 
 {user_profile_summary}
@@ -469,15 +487,11 @@ You are generating realistic file contents for a simulated Windows PC environmen
 {batch_json}
 ```
 
-## Path Mapping — CRITICAL
+## Path Mapping
 
-Logical Windows paths in file_list MUST be converted to physical paths under `drives/`:
+See the PATH RULE section at the top. Convert logical paths → physical paths:
 - `C:/...` → `drives/C/...`
 - `D:/...` → `drives/D/...`
-
-For example: `C:/Users/alice/Documents/report.docx` → `drives/C/Users/alice/Documents/report.docx`
-
-**DANGER: NEVER create files at actual Windows drive paths like `C:/Users/...` or `D:/Data/...`. This would write to the real filesystem and corrupt the user's machine. ALWAYS use the `drives/` prefix. This applies to ALL file operations: direct writes, scripts (Python/Node), curl downloads, mkdir, etc. Every path in every script you write must start with `drives/`.**
 
 ## Instructions
 
@@ -518,6 +532,15 @@ Process EACH file in the batch above, in order. For each file:
 | `.png`, `.jpg`, `.jpeg` | `/image-generation` skill | Use the image-generation skill to create a real image. |
 
 - **Text files** (.txt, .md, .csv, .json, .py, .js, .xml, .yaml, .log, etc.): write the actual text content directly — no special tool needed.
+
+**REMINDER: Inside every Python/JS script you write, the output path variable MUST start with `drives/`. Example:**
+```python
+# CORRECT:
+output_path = "drives/C/Users/alice/Documents/report.xlsx"
+# WRONG — will write to real filesystem:
+output_path = "/mnt/d/.../drives/C/Users/alice/Documents/report.xlsx"
+output_path = "C:/Users/alice/Documents/report.xlsx"
+```
 
 ### If content_mode = "download"
 
@@ -574,9 +597,8 @@ The activity description must NOT be a simple atomic action like "saved a file".
 4. How it connects to the user's projects and workflow
 
 ## Important
-- **NEVER write to real Windows paths (C:/, D:/, etc.) — ALWAYS use drives/C/, drives/D/ relative paths in ALL file operations including generated scripts**
-- Create all necessary parent directories before writing files
-- Use the physical path mapping (drives/C/..., drives/D/...)
+- **PATH RULE**: Every path must start with `drives/`. No `/mnt/`, no `/d/`, no `/home/`, no bare `C:/` or `D:/`. Check every path before every file operation.
+- Create all necessary parent directories before writing files (`mkdir -p drives/C/Users/...`)
 - Process files in the order given (chronological)
 - Append to activity_log.jsonl, do not overwrite it
 """

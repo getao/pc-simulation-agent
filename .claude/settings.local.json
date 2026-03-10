@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(uv sync)",
-      "Bash(uv run python -c \":*)"
+      "Bash(uv run python -c \":*)",
+      "Bash(git add .claude/skills/)",
+      "Bash(git commit:*)",
+      "Bash(git push)",
+      "Bash(git add pipeline.py)",
+      "Bash(python -c \"import json, os; root=''d:/taoge/repos/pc-simulation-agent/worlds''; [print\\(f''{d}: {sum\\(1 for f in json.load\\(open\\(os.path.join\\(root,d,\"\"file_list.json\"\"\\)\\)\\) if f.get\\(\"\"content_generated\"\"\\)\\)}/{len\\(json.load\\(open\\(os.path.join\\(root,d,\"\"file_list.json\"\"\\)\\)\\)\\)} generated''\\) if os.path.isfile\\(os.path.join\\(root,d,''file_list.json''\\)\\) else print\\(f''{d}: no file_list.json''\\) for d in sorted\\(os.listdir\\(root\\)\\) if d.startswith\\(''gdpeval_world_''\\)]\")",
+      "Bash(python -c \":*)",
+      "Bash(git add batch_run.py pipeline.py)"
     ]
   }
 }
