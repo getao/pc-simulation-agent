@@ -12,5 +12,4 @@ package.json
 package-lock.json
 activity_log.jsonl
 test_out.jpg
-sampled_100_gdpval_personas.jsonl
 append_rfid_log.py
