@@ -61,6 +61,11 @@ def main():
         default=None,
         help="Claude model to use (e.g. claude-sonnet-4-6). Default: SDK default.",
     )
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Only run Steps 6 and 6.5 (monthly objectives + external persona ref files), then stop.",
+    )
 
     args = parser.parse_args()
 
@@ -88,14 +93,23 @@ def main():
     start_date = args.start_date or datetime.now().strftime("%Y-%m-%d")
 
     async def run():
-        result_dir = await daily_simulate(
-            world_dir=world_dir,
-            start_date=start_date,
-            num_weeks=args.weeks,
-            plugins=plugins,
-            model=args.model,
-        )
-        print(f"\nDaily Simulation complete: {result_dir}")
+        try:
+            result_dir = await daily_simulate(
+                world_dir=world_dir,
+                start_date=start_date,
+                num_weeks=args.weeks,
+                plugins=plugins,
+                model=args.model,
+                plan_only=args.plan_only,
+            )
+            if args.plan_only:
+                print(f"\nSteps 6 & 6.5 complete: {result_dir}")
+            else:
+                print(f"\nDaily Simulation complete: {result_dir}")
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
 
     anyio.run(run)
 
