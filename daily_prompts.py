@@ -217,7 +217,8 @@ feedback on submitted work, etc.  There is NO interaction_timeline.
 | Direct Report | Data exports (may contain errors), draft work products, analysis templates |
 | External Party | Industry standards, regulatory templates, third-party reports |
 
-**Hidden Rubric** — for each deliverable, specify a rubric from its requester:
+**Hidden Rubric** — **every deliverable MUST have exactly one persona with a rubric** for it.
+Assign the rubric to the persona who is the natural requester/evaluator of that deliverable:
 ```json
 {{
   "rubric": {{
@@ -795,39 +796,53 @@ def build_evaluation_prompt(
     persona: dict,
     deliverable: dict,
     interaction_history: list[dict],
-    deliverable_files: dict[str, str],
-    reference_files: dict[str, str],
+    deliverable_file_paths: dict[str, str],
+    reference_file_paths: list[str],
 ) -> str:
-    """Build prompt for an evaluator persona agent to generate a granular
-    rubric and score a deliverable.
+    """Build prompt for an evaluator persona agent to generate a GDPval-level
+    granular rubric and score a deliverable.
 
-    The evaluator sees:
-    - The original rubric criteria (high-level)
+    The evaluator receives in the prompt (for rubric generation):
+    - The deliverable specification (description, milestones, expected outputs)
+    - Their own preferences and priorities (high-level rubric from Step 6)
     - Full interaction history with the main agent
-    - All reference files they shared
-    - The final deliverable files produced by the main agent
+
+    The evaluator reads with tools (for rubric generation + scoring):
+    - Reference files (to extract exact expected values for rubric items)
+    - Deliverable files (to score against the rubric)
+
+    Args:
+        deliverable_file_paths: {logical_path: physical_path_relative_to_cwd}
+        reference_file_paths: list of paths relative to cwd
     """
     persona_name = persona.get("name", "Unknown")
+    persona_id = persona.get("id", "unknown")
     rubric = persona.get("rubric", {})
     rubric_json = json.dumps(rubric, indent=2, ensure_ascii=False) if rubric else "{}"
 
+    # Build deliverable specification
+    dlv_id = deliverable.get("id", "unknown")
+    dlv_title = deliverable.get("title", "Unknown")
+    dlv_desc = deliverable.get("description", "")
+    dlv_milestones = deliverable.get("milestones", [])
+    dlv_output_files = deliverable.get("output_files", [])
+    milestones_text = "\n".join(
+        f"  Week {m.get('week', '?')}: {m.get('goal', '')}"
+        for m in dlv_milestones
+    )
+    output_files_text = "\n".join(f"  - {f}" for f in dlv_output_files)
+
     history_json = json.dumps(interaction_history, indent=2, ensure_ascii=False) if interaction_history else "[]"
 
-    # Build deliverable files content
-    deliv_parts = []
-    for path, content in deliverable_files.items():
-        if len(content) > 8000:
-            content = content[:8000] + "\n... [truncated] ..."
-        deliv_parts.append(f"### {path}\n```\n{content}\n```")
-    deliv_section = "\n\n".join(deliv_parts) if deliv_parts else "(No deliverable files found)"
+    # Build deliverable file path listing
+    deliv_path_lines = []
+    for logical, physical in deliverable_file_paths.items():
+        deliv_path_lines.append(f"  - `{physical}`  (← {logical})")
+    deliv_paths_section = "\n".join(deliv_path_lines) if deliv_path_lines else "  (No deliverable files found)"
 
-    # Build reference files content
-    ref_parts = []
-    for path, content in reference_files.items():
-        if len(content) > 5000:
-            content = content[:5000] + "\n... [truncated] ..."
-        ref_parts.append(f"### {path}\n```\n{content}\n```")
-    ref_section = "\n\n".join(ref_parts) if ref_parts else "(No reference files)"
+    # Build reference file path listing
+    ref_path_lines = [f"  - `{p}`" for p in reference_file_paths]
+    ref_paths_section = "\n".join(ref_path_lines) if ref_path_lines else "  (No reference files)"
 
     return f"""\
 You are **{persona_name}**, evaluating a deliverable in a work simulation.
@@ -835,72 +850,144 @@ You are **{persona_name}**, evaluating a deliverable in a work simulation.
 ## Your Role
 You are the evaluator/reviewer for this deliverable. You have worked with
 the main user throughout the month — sharing data, providing feedback,
-making requests, and communicating requirements.
+making requests, and communicating requirements. Now you must produce a
+rigorous, fine-grained evaluation.
 
-## High-Level Evaluation Criteria (starting point)
+## Deliverable Specification
+**ID**: {dlv_id}
+**Title**: {dlv_title}
+**Description**: {dlv_desc}
+**Milestones**:
+{milestones_text}
+**Expected Output Files**:
+{output_files_text}
+
+## Your Preferences and Priorities
+These are the high-level areas you care about as the evaluator. Use them
+as a starting point, but your detailed rubric must go far beyond these.
 {rubric_json}
 
 ## Your Full Interaction History with the Main User
+This is the complete record of every message exchanged. Mine this carefully —
+every correction you made, every requirement you communicated, every data
+point you provided becomes a verifiable rubric item.
 {history_json}
 
-## Your Reference Files (data you shared, templates you provided)
-{ref_section}
+## Files You Must Read
 
-## Deliverable Files to Evaluate
-{deliv_section}
+**Your Reference Files** (data you shared, templates you provided):
+{ref_paths_section}
+
+**Deliverable Files to Evaluate**:
+{deliv_paths_section}
+
+Read ALL of these files using the Read tool before generating your rubric.
+For .xlsx, .docx, and .pdf files, the Read tool will handle them correctly.
 
 ═══════════════════════════════════════════════════════════════════
 
 ## YOUR TASK
 
-### Step 1: Generate Granular Rubric
-Based on your high-level criteria, your interaction history, and your
-domain expertise, generate a **detailed, item-by-item rubric** in the
-style below.  Each item must be specific and independently verifiable.
+You must produce an evaluation at the granularity level of professional
+benchmark rubrics (like GDPval). This means **45–65 specific, independently
+verifiable items**, each with concrete expected values wherever possible.
 
-Format:
+### Phase 1: Read All Files
+Read every reference file and every deliverable file listed above.
+You need the reference files to know what values to expect, and the
+deliverable files to verify those values.
+
+### Phase 2: Generate Granular Rubric
+
+Systematically derive rubric items from ALL of these sources:
+
+**A. From the Deliverable Specification** (~5–10 items)
+- Each expected output file exists and is in the correct format
+- Each milestone goal is addressed in the final deliverable
+- The deliverable title/scope is fully covered
+
+**B. From Your Reference Files** (~10–15 items)
+- Specific data values from your reference files are correctly used
+  (e.g., "F&A rate is exactly 52.5%", "loop duration for position B-S1
+  is exactly 12:00")
+- Template formats and required fields are followed
+- Standards and specifications from your documents are met
+
+**C. From Interaction History** (~10–20 items)
+- Every specific correction you communicated is incorporated
+  (e.g., "Panel B-2 word count reduced to ≤120 words per my Feb 19 note")
+- Every requirement you stated in conversation is met
+- Every question you answered is reflected in the deliverable
+- Agreements and decisions made during exchanges are honored
+- Items you flagged as blocking or conditional are resolved
+
+**D. From Domain Expertise** (~5–10 items)
+- Professional standards for this type of deliverable
+- Internal consistency (numbers add up, cross-references are correct)
+- Completeness checks (all sections present, no gaps)
+- Technical accuracy of claims, calculations, or data
+
+**E. Overall Quality** (~3–5 items)
+- Formatting and presentation
+- Professional language and tone
+- Organization and navigability
+
+Each rubric item MUST follow this format:
 ```
-[+N] Specific verifiable criterion based on what you know and communicated
+[+N] Concrete, verifiable criterion with expected value if applicable
 ```
 
-Where N is the point value (1 for minor, 2 for important, 5 for critical).
+Point values:
+- **+1**: Minor formatting, style, or cosmetic item
+- **+2**: Substantive requirement (correct value, required section, spec compliance)
+- **+5**: Critical requirement (blocking issue, major accuracy, core deliverable)
 
-Include items that check:
-- Whether corrections you communicated were incorporated
-- Whether data from your reference files was used accurately
-- Whether additional requirements revealed during interactions are met
-- Whether the deliverable reflects the final agreed-upon approach
-  (not earlier versions that were revised)
-- Domain-specific accuracy based on your expertise
+**Be specific.** BAD: "Budget is complete." GOOD: "Personnel line items include
+PI (0.5 FTE), Co-PI (0.25 FTE), and Postdoc (1.0 FTE) with salary rates
+matching Year 4 actuals from FARI expenditure report."
 
-### Step 2: Score Each Item
-For each rubric item, score it:
-- Full points if met
-- 0 if not met
-- Partial credit with explanation if partially met
+**Use exact values.** BAD: "Indirect costs are calculated correctly."
+GOOD: "F&A is calculated at 52.5% of MTDC, yielding $47,250 on a $90,000
+MTDC base."
 
-### Step 3: Summary
-Write the rubric and scores to `evaluation_{persona.get("id", "unknown")}_{deliverable.get("id", "unknown")}.json`:
+### Phase 3: Score Each Item
+For each rubric item:
+- **Full points** if the criterion is clearly met in the deliverable
+- **0 points** if not met or not present
+- **Partial credit** (with explanation) only if partially addressed
+
+Be strict. If a value is wrong, it is wrong — do not give partial credit
+for "attempting" it. Partial credit is for items that are substantively
+addressed but have a minor discrepancy.
+
+### Phase 4: Write Evaluation File
+Write the complete rubric and scores to `evaluation_{persona_id}_{dlv_id}.json`
+**in the current working directory root** (NOT inside `drives/`):
 ```json
 {{
-  "deliverable_id": "<id>",
-  "evaluator_id": "{persona.get("id", "unknown")}",
+  "deliverable_id": "{dlv_id}",
+  "evaluator_id": "{persona_id}",
   "evaluator_name": "{persona_name}",
   "total_possible": <sum of all point values>,
   "total_earned": <sum of earned points>,
-  "percentage": <earned/possible * 100>,
+  "percentage": <round(earned/possible * 100, 1)>,
   "items": [
     {{
-      "criterion": "<specific criterion text>",
+      "criterion": "<specific criterion text with expected value>",
+      "source": "<spec|reference|interaction|expertise|quality>",
       "points_possible": N,
       "points_earned": M,
-      "met": true/false/partial,
-      "notes": "<explanation if not fully met>"
+      "met": true/false/"partial",
+      "notes": "<evidence from deliverable, or explanation if not met>"
     }}
   ],
-  "overall_comments": "<qualitative assessment in character>"
+  "overall_comments": "<qualitative assessment in character, 2-3 paragraphs>"
 }}
 ```
+
+**IMPORTANT**: You must produce at least 45 rubric items. Aim for 50–60.
+Each item must be independently verifiable — no vague or subjective criteria.
+Use a script to write the JSON file to ensure validity.
 
 Generate the rubric and evaluate now.
 """

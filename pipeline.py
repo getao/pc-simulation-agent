@@ -53,27 +53,42 @@ from daily_prompts import (
 # Claude Code SDK wrapper
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = {
-    "type": "preset",
-    "preset": "claude_code",
-    "append": (
-        "\n\nYou are building a simulated Windows PC filesystem environment. "
-        "Follow instructions precisely. Write files exactly as specified. "
-        "Output only what is requested — no explanations unless asked.\n\n"
-        "## PATH RULE (applies to ALL file operations)\n"
-        "Your current working directory (cwd) IS the world directory. "
-        "All file paths MUST be RELATIVE to cwd, starting with `drives/`. "
-        "For example: `drives/C/Users/alice/Documents/report.docx`.\n"
-        "NEVER use absolute paths such as `/mnt/d/...`, `/d/...`, `/home/...`, "
-        "`C:/...`, `D:/...`, or any path that does NOT start with `drives/`. "
-        "This rule applies everywhere: Write tool file_path, Bash commands, "
-        "and inside any Python/JS scripts you generate.\n\n"
-        "## PRE-INSTALLED PACKAGES (already available — do NOT reinstall)\n"
-        "Python: openpyxl, reportlab, python-docx, python-pptx\n"
-        "Node.js (in cwd): docx, pptxgenjs (require via `require('docx')` etc.)\n"
-        "Skip any `pip install` or `npm install` steps for these packages."
-    ),
-}
+_SYSTEM_PROMPT_BASE = (
+    "\n\nYou are building a simulated Windows PC filesystem environment. "
+    "Follow instructions precisely. Write files exactly as specified. "
+    "Output only what is requested — no explanations unless asked.\n\n"
+    "## PRE-INSTALLED PACKAGES (already available — do NOT reinstall)\n"
+    "Python: openpyxl, reportlab, python-docx, python-pptx\n"
+    "Node.js (in cwd): docx, pptxgenjs (require via `require('docx')` etc.)\n"
+    "Skip any `pip install` or `npm install` steps for these packages."
+)
+
+
+def _build_system_prompt(cwd: str) -> dict:
+    """Build a system prompt with the absolute world directory path injected."""
+    abs_cwd = os.path.abspath(cwd).replace("\\", "/")
+    return {
+        "type": "preset",
+        "preset": "claude_code",
+        "append": (
+            f"{_SYSTEM_PROMPT_BASE}\n\n"
+            f"## PATH RULE — READ THIS BEFORE EVERY FILE OPERATION\n"
+            f"Your working directory is: `{abs_cwd}`\n"
+            f"ALL file paths you use MUST resolve to somewhere under this directory.\n\n"
+            f"Two types of files:\n"
+            f"1. **User documents** → write under `drives/` using relative paths.\n"
+            f"   Example: `drives/C/Users/alice/Documents/report.docx`\n"
+            f"2. **Simulation control files** (week plans, evaluation JSONs, logs) "
+            f"→ write in the working directory root.\n"
+            f"   Example: `week_1_plan.json`, `evaluation_ext_002_dlv_002.json`\n\n"
+            f"NEVER use absolute paths like `C:/Users/...`, `D:/Projects/...`, "
+            f"`/mnt/d/...`, or any path outside `{abs_cwd}`.\n"
+            f"NEVER write files to `drives/` that are meant to be simulation "
+            f"control files — those go in the root.\n"
+            f"This rule applies to: Write tool, Edit tool, Bash commands, "
+            f"and any Python/JS scripts you generate."
+        ),
+    }
 
 # Regex: bare Windows drive letter path (C:/ D:/ etc.) NOT preceded by "drives/"
 _BARE_DRIVE_RE = re.compile(r'(?<!/)\b[A-Z]:[/\\]')
@@ -167,7 +182,7 @@ async def call_claude(
         step_label: Label for this session in the turn log (e.g. "step6", "step6.5_ext_tyler").
     """
     options = ClaudeAgentOptions(
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=_build_system_prompt(cwd),
         permission_mode="bypassPermissions",
         cwd=cwd,
         max_turns=max_turns,
@@ -376,7 +391,20 @@ def _ensure_dependencies(world_dir: str, log_fn=None):
 
 def _read_json(path: str) -> dict | list:
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        raw = f.read()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        if "Extra data" in str(e):
+            # Agent appended multiple JSON objects — parse just the first one
+            decoder = json.JSONDecoder()
+            result, _ = decoder.raw_decode(raw)
+            # Re-write the file with only the valid first object to prevent
+            # the same error on subsequent reads
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+            return result
+        raise
 
 
 def _validate_user_profile(world_dir: str) -> dict:
@@ -972,6 +1000,18 @@ async def daily_simulate(
         persona_count = len(external_context.get("external_personas", []))
         log(f"Step 6 done: {dlv_count} deliverables, {persona_count} external personas.")
 
+    # Validate: every deliverable must have an evaluator persona with a rubric
+    deliverable_ids = {d["id"] for d in objectives.get("deliverables", [])}
+    personas_list = external_context.get("external_personas", [])
+    covered_ids = set()
+    for p in personas_list:
+        rubric = p.get("rubric")
+        if rubric and rubric.get("deliverable_id"):
+            covered_ids.add(rubric["deliverable_id"])
+    uncovered = deliverable_ids - covered_ids
+    if uncovered:
+        log(f"  WARNING: deliverables without evaluator rubric: {uncovered}")
+
     # ==================================================================
     # Step 6.5: Generate External Persona Reference Files
     # ==================================================================
@@ -1332,13 +1372,22 @@ async def daily_simulate(
                 real_world_context=real_world_context,
                 existing_file_contents=existing_contents if existing_contents else None,
             )
-            _accumulate_ds(await call_claude(
-                prompt, cwd=world_dir, max_turns=500, plugins=plugins,
-                model=model,
-                mcp_servers={"persona-tools": persona_mcp_server},
-                log_file=log_file, turn_log_file=turn_log_file,
-                step_label=f"step8_week{week_num}_day{day_idx}_{day_date}",
-            ))
+            max_retries = 3
+            for attempt in range(1, max_retries + 1):
+                try:
+                    _accumulate_ds(await call_claude(
+                        prompt, cwd=world_dir, max_turns=500, plugins=plugins,
+                        model=model,
+                        mcp_servers={"persona-tools": persona_mcp_server},
+                        log_file=log_file, turn_log_file=turn_log_file,
+                        step_label=f"step8_week{week_num}_day{day_idx}_{day_date}",
+                    ))
+                    break  # success
+                except Exception as e:
+                    if attempt < max_retries:
+                        log(f"  RETRY {attempt}/{max_retries}: {type(e).__name__}: {e}")
+                    else:
+                        raise
             _cleanup_stray_files(world_dir, log_fn=log)
 
             # ========== Post-day bookkeeping ==========
@@ -1410,31 +1459,31 @@ async def daily_simulate(
         eval_name = evaluator_persona.get("name", "Unknown")
         log(f"  Step 9: {eval_name} evaluating {dlv_id}...")
 
-        # Collect deliverable files
-        deliv_files = {}
+        # Collect deliverable file paths (logical → physical relative to cwd)
+        deliv_file_paths = {}
         for path in dlv.get("output_files", []):
             physical = _logical_to_physical(world_dir, path)
             if physical and os.path.exists(physical):
-                content = _read_file_as_text(physical)
-                if content:
-                    deliv_files[path] = content
+                # Use path relative to world_dir (the agent's cwd)
+                rel = os.path.relpath(physical, world_dir).replace("\\", "/")
+                deliv_file_paths[path] = rel
 
-        # Collect evaluator's reference files
-        ref_files_content = {}
+        # Collect evaluator's reference file paths
+        ref_file_paths = []
         eval_ref_dir = os.path.join(world_dir, "external_refs", eval_pid)
         if os.path.isdir(eval_ref_dir):
             for fn in os.listdir(eval_ref_dir):
                 fpath = os.path.join(eval_ref_dir, fn)
-                content = _read_file_as_text(fpath)
-                if content:
-                    ref_files_content[fn] = content
+                if os.path.isfile(fpath):
+                    rel = os.path.relpath(fpath, world_dir).replace("\\", "/")
+                    ref_file_paths.append(rel)
 
         prompt = build_evaluation_prompt(
             persona=evaluator_persona,
             deliverable=dlv,
             interaction_history=persona_interaction_logs.get(eval_pid, []),
-            deliverable_files=deliv_files,
-            reference_files=ref_files_content,
+            deliverable_file_paths=deliv_file_paths,
+            reference_file_paths=ref_file_paths,
         )
         result = await call_claude(
             prompt, cwd=world_dir, max_turns=30, plugins=plugins,
