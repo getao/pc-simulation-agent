@@ -130,8 +130,12 @@ def _cleanup_stray_files(world_dir: str, log_fn=None):
 
     Claude Code on Git Bash sometimes writes to /mnt/d/..., /d/..., /home/...
     which end up as D:\\mnt, D:\\d, D:\\home on Windows.
+    Only runs on Windows — on macOS/Linux these are real system directories.
     """
     drive = os.path.splitdrive(os.path.abspath(world_dir))[0]  # e.g. "D:"
+    if not drive:
+        # Not on Windows (no drive letter) — skip to avoid deleting real dirs
+        return 0
     removed = 0
     for dirname in _STRAY_DIRS:
         stray = os.path.join(drive + os.sep, dirname)
@@ -380,7 +384,8 @@ def _ensure_dependencies(world_dir: str, log_fn=None):
         log(f"Pre-installing Node packages: {', '.join(_NPM_PACKAGES.keys())}")
         subprocess.run(
             ["npm", "install"],
-            cwd=world_dir, check=True, capture_output=True, shell=True,
+            cwd=world_dir, check=True, capture_output=True,
+            shell=(sys.platform == "win32"),
         )
     log("Dependency pre-installation complete.")
 
