@@ -50,6 +50,14 @@ Main agent communicates with external personas via `contact_persona` MCP tool:
 - Agent reads files via tools (supports xlsx, docx, pdf) — no content truncation in prompt
 - Each item: criterion, source (spec|reference|interaction|expertise|quality), points, met/unmet
 
+## Pre-installed Packages (auto-installed per world via `_ensure_dependencies`)
+- **Office**: openpyxl, python-docx, python-pptx, reportlab, pymupdf (fitz)
+- **Image**: Pillow, opencv-python-headless, scikit-image
+- **Data/Viz**: matplotlib, plotly, pandas, numpy, scipy, scikit-learn
+- **Audio/Video**: ffmpeg-python, moviepy, pydub (requires system ffmpeg binary)
+- **CAD**: cadquery
+- **Node.js**: docx, pptxgenjs
+
 ## Known Issues
 - SDK ExceptionGroup after contact_persona MCP tool (~50% of calls) — mitigated with 3-retry logic
 - `_ensure_dependencies` uses `uv pip install` (not `pip`) because venv has no pip module

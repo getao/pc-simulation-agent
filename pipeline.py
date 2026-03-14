@@ -58,8 +58,13 @@ _SYSTEM_PROMPT_BASE = (
     "Follow instructions precisely. Write files exactly as specified. "
     "Output only what is requested — no explanations unless asked.\n\n"
     "## PRE-INSTALLED PACKAGES (already available — do NOT reinstall)\n"
-    "Python: openpyxl, reportlab, python-docx, python-pptx\n"
-    "Node.js (in cwd): docx, pptxgenjs (require via `require('docx')` etc.)\n"
+    "Office: openpyxl (.xlsx), python-docx (.docx), python-pptx (.pptx), "
+    "reportlab (.pdf create), pymupdf/fitz (.pdf read/edit/merge)\n"
+    "Image: Pillow (PIL), opencv-python (cv2), scikit-image (skimage)\n"
+    "Data/Viz: matplotlib, plotly, pandas, numpy, scipy, scikit-learn\n"
+    "Audio/Video: ffmpeg-python, moviepy, pydub\n"
+    "CAD: cadquery\n"
+    "Node.js (in cwd): docx, pptxgenjs\n"
     "Skip any `pip install` or `npm install` steps for these packages."
 )
 
@@ -313,10 +318,29 @@ async def call_claude(
 
 # (pip_name, import_name)
 _PYTHON_PACKAGES = [
-    ("openpyxl", "openpyxl"),       # .xlsx generation
-    ("reportlab", "reportlab"),     # .pdf generation
-    ("python-docx", "docx"),        # .docx generation
-    ("python-pptx", "pptx"),        # .pptx generation
+    # --- Office documents ---
+    ("openpyxl", "openpyxl"),           # .xlsx generation
+    ("reportlab", "reportlab"),         # .pdf generation (basic)
+    ("python-docx", "docx"),            # .docx generation
+    ("python-pptx", "pptx"),            # .pptx generation
+    ("pymupdf", "fitz"),                # .pdf read/edit/merge (PyMuPDF)
+    # --- Image ---
+    ("Pillow", "PIL"),                  # image creation/editing
+    ("opencv-python-headless", "cv2"),  # image processing
+    ("scikit-image", "skimage"),        # advanced image algorithms
+    # --- Data visualisation / scientific ---
+    ("matplotlib", "matplotlib"),       # charts, plots, diagrams
+    ("plotly", "plotly"),               # interactive charts (export to png/html)
+    ("scipy", "scipy"),                 # scientific computing
+    ("scikit-learn", "sklearn"),        # ML & data analysis
+    ("pandas", "pandas"),               # dataframes
+    ("numpy", "numpy"),                 # numerical arrays
+    # --- Audio / Video ---
+    ("ffmpeg-python", "ffmpeg"),        # FFmpeg wrapper for audio/video
+    ("moviepy", "moviepy"),             # video editing
+    ("pydub", "pydub"),                 # audio editing
+    # --- CAD ---
+    ("cadquery", "cadquery"),           # parametric 3D CAD modelling
 ]
 
 _NPM_PACKAGES = {
