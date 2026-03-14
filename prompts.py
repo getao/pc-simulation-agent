@@ -342,7 +342,7 @@ An array of file entries:
 - The mix must feel realistic for THIS specific user
 
 ### Content Modes
-- `generate`: for files whose content should be created by AI (documents, code, notes, images, etc.). This includes `.docx`, `.xlsx`, `.pptx`, `.pdf`, `.png`, `.jpg` — all of these CAN be generated.
+- `generate`: for files whose content should be created by AI (documents, code, notes, images, charts, etc.). This includes `.docx`, `.xlsx`, `.pptx`, `.pdf`, `.png`, `.jpg` — all of these CAN be generated. Charts and data visualizations should use matplotlib/plotly.
 - `download`: for files obtained from the internet (PDFs, forms, templates, installers, archives)
 - `skip`: for installers (.exe, .msi), large archives that won't be extracted, and other files that cannot be meaningfully generated — only a placeholder will be created. Do NOT use `skip` for images, Office documents, or PDFs.
 
@@ -505,11 +505,11 @@ Process EACH file in the batch above, in order. For each file:
 
 **CRITICAL — Respect the `content_scale` field for realistic file sizes:**
 
-| content_scale | .docx / .pdf | .xlsx | .txt / .md / code | .png / .jpg |
-|---------------|-------------|-------|-------------------|-------------|
-| `small` | 1-2 pages, brief content | 10-30 rows | Short file, ~20-50 lines | Simple image |
-| `medium` | 3-8 pages, multiple sections | 50-200 rows, multiple sheets OK | Moderate, ~50-200 lines | Detailed image |
-| `large` | 15+ pages, comprehensive | 500-2000+ rows, realistic dataset | Long file, 200+ lines | Complex image |
+| content_scale | .docx / .pdf | .xlsx | .txt / .md / code | .png / .jpg (photo/design) | .png / .pdf (chart/diagram) |
+|---------------|-------------|-------|-------------------|---------------------------|----------------------------|
+| `small` | 1-2 pages, brief content | 10-30 rows | Short file, ~20-50 lines | Simple image | 1 chart, basic axes |
+| `medium` | 3-8 pages, multiple sections | 50-200 rows, multiple sheets OK | Moderate, ~50-200 lines | Detailed image | 2-4 subplots or multi-series |
+| `large` | 15+ pages, comprehensive | 500-2000+ rows, realistic dataset | Long file, 200+ lines | Complex image | Multi-panel dashboard, 5+ charts |
 
 - `large` files are the user's KEY deliverables. Put real effort into them — they should feel like substantial, real documents.
 - For `large` Excel files: write a Python script (using openpyxl) that **programmatically generates** 500-2000+ rows of realistic tabular data. The data must be contextually authentic for what the file represents — think about what real data in this domain looks like and simulate it faithfully:
@@ -529,7 +529,8 @@ Process EACH file in the batch above, in order. For each file:
 | `.xlsx`, `.xlsm` | **openpyxl** (Python) | Write a Python script using `openpyxl`, then run it. Follow the xlsx skill formatting standards. |
 | `.pptx` | **PptxGenJS** (npm `pptxgenjs`) | Write a JavaScript script using `pptxgenjs`, then run it with `node`. |
 | `.pdf` | **reportlab** (Python) | Write a Python script using `reportlab`, then run it. |
-| `.png`, `.jpg`, `.jpeg` | `/image-generation` skill | Use the image-generation skill to create a real image. |
+| `.png`, `.jpg` (photo/design) | `/image-generation` skill | Use the image-generation skill to create a real image (photos, logos, illustrations, diagrams). |
+| `.png`, `.pdf` (chart/graph) | **matplotlib** or **plotly** (Python) | Write a Python script using matplotlib/plotly to generate data visualizations, charts, graphs, dashboards. Use `plt.savefig()` or `fig.write_image()`. Preferred for any file that is a chart, plot, graph, or data visualization. |
 
 - **Text files** (.txt, .md, .csv, .json, .py, .js, .xml, .yaml, .log, etc.): write the actual text content directly — no special tool needed.
 
@@ -555,7 +556,8 @@ output_path = "C:/Users/alice/Documents/report.xlsx"
 - For **.xlsx** files: use **openpyxl** (write Python script, run it)
 - For **.pptx** files: use **PptxGenJS** (write JS script, run with `node`)
 - For **.pdf** files: use **reportlab** (write Python script, run it)
-- For **.png/.jpg** images: use `/image-generation` skill
+- For **.png/.jpg** photos/designs: use `/image-generation` skill
+- For **.png/.pdf** charts/graphs: use **matplotlib** or **plotly** (write Python script, run it)
 - For text-based files (.csv, .json, .txt, etc.): write realistic content directly
 - For installers (.exe, .msi): create a small placeholder file
 - For **archives** (.zip, .tar.gz, .7z, .rar): archives CANNOT be fallback-generated. If download fails, remove the archive entry from `file_list.json` and remove any related edges/nodes from `file_graph.json`, then move on to the next file.

@@ -320,6 +320,7 @@ Create each file listed above in the directory `external_refs/{persona_id}/`.
   - .xlsx → openpyxl (Python) or xlsx (Node.js)
   - .pptx → pptxgenjs (Node.js)
   - .pdf → reportlab (Python) or pdf-lib (Node.js)
+  - .png/.pdf (chart/graph) → matplotlib or plotly (Python)
   - .txt/.eml → Write tool directly
 - Content must be **professional, domain-accurate, and realistic**.
   These files will be used as input data and quality benchmarks in the
@@ -643,7 +644,8 @@ These activities don't produce files but must be recorded in activity_log.jsonl:
    - .pptx → use `pptxgenjs` via a Node.js script
    - .pdf → use `reportlab` (Python) or `pdf-lib` (Node.js)
    - .txt / .eml / .md / .json / .csv → use the Write tool directly
-   - .png / .jpg → use image-generation skill or Jimp
+   - .png / .jpg (photo/design) → use image-generation skill or Jimp
+   - .png / .pdf (chart/graph/dashboard) → use `matplotlib` or `plotly` (Python)
 4. Content must be professional, domain-accurate, and realistic.
 5. Each deep_work file must be ≥ GDP-val complexity level.
 6. If the activity involves external persona interaction (email, chat,
