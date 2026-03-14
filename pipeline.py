@@ -192,6 +192,9 @@ async def call_claude(
         max_turns=max_turns,
         can_use_tool=_make_path_guard(cwd),
     )
+    # Enable OS-level sandbox on macOS/Linux to restrict Bash file access
+    if sys.platform != "win32":
+        options.sandbox = {"enabled": True, "autoAllowBashIfSandboxed": True}
     if plugins:
         options.plugins = plugins
     if model:
